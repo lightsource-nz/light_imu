@@ -13,13 +13,33 @@
 
 #define LIGHT_IMU_MAX_DEVICES                   4
 
-// axis indices into accel_mg[]/gyro_mdps[]. named rather than bare 0/1/2 because which
-// physical direction each one points is a property of how the chip is mounted on the board,
-// not of this module -- see the board's own header for that mapping
+// axis indices into accel_mg[]/gyro_mdps[]. those arrays are in the DEVICE frame, not the
+// chip's: +X points right across the display, +Y up it, +Z out of it toward the viewer.
+// a driver reports whatever its chip's own axes read, and light_imu rotates them into the
+// device frame using the board's axis map (see light_imu_set_axis_map())
 #define IMU_AXIS_X                              0
 #define IMU_AXIS_Y                              1
 #define IMU_AXIS_Z                              2
 #define IMU_AXIS_COUNT                          3
+
+// how a chip's own axes are mounted relative to the device frame above. source[i] names the
+// CHIP axis that supplies device axis i, and sign[i] negates it.
+//
+// this has to exist for the orientation codes below to mean anything at all: "portrait" and
+// "face up" describe the DISPLAY, and a chip soldered down rotated (or on the underside)
+// reports axes that have no fixed relationship to it. without the map, orientation is only
+// correct on a board whose IMU happens to be mounted square, which is luck rather than design
+struct imu_axis_map {
+        uint8_t source[IMU_AXIS_COUNT];
+        int8_t sign[IMU_AXIS_COUNT];
+};
+// the map for a chip already aligned with the device frame, and the default for a device
+// whose board hasn't set one
+#define IMU_AXIS_MAP_IDENTITY \
+        ((struct imu_axis_map) { \
+                .source = { IMU_AXIS_X, IMU_AXIS_Y, IMU_AXIS_Z }, \
+                .sign = { 1, 1, 1 } \
+        })
 
 // which way the device is being held, derived from the accelerometer (see
 // light_imu_take_orientation()). "portrait" means the board's +Y axis points up
@@ -65,9 +85,13 @@ struct imu_device {
         // milli-degrees per second. integer throughout, so this stays usable on an FPU-less
         // RP2040 as readily as on the RP2350 it was written against -- and it means the
         // conversion (which needs the chip's full-scale setting) happens once, in the
-        // driver that knows it, rather than in every caller
+        // driver that knows it, rather than in every caller.
+        //
+        // in the DEVICE frame: drivers write chip-frame values here and light_imu rotates
+        // them in place through axis_map on the way out of the poll
         int32_t accel_mg[IMU_AXIS_COUNT];
         int32_t gyro_mdps[IMU_AXIS_COUNT];
+        struct imu_axis_map axis_map;
         // milli-degrees Celsius; drivers that don't report die temperature leave this at 0
         int32_t temperature_mc;
         struct imu_driver_context *driver_ctx;
@@ -124,6 +148,10 @@ extern bool light_imu_take_orientation(struct imu_device *dev, uint8_t *out);
 // rather than device state, so they persist across light_imu_command_reset()
 extern void light_imu_set_orientation_thresholds(struct imu_device *dev,
                                                 uint16_t hold_ms, uint16_t margin_mg);
+// declares how this board mounts the chip (see struct imu_axis_map). set it once, from the
+// board's own hardware setup, before anything reads a sample -- it is a property of the
+// PCB, so a driver cannot know it and an application should not have to compensate for it
+extern void light_imu_set_axis_map(struct imu_device *dev, struct imu_axis_map map);
 
 // converts a raw signed 16-bit sensor count into engineering units given the full-scale
 // range it was sampled at (e.g. 8000 for a +/-8g accelerometer reporting milli-g).

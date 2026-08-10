@@ -95,6 +95,7 @@ struct imu_device *light_imu_init_device_va(
                 dev->gyro_mdps[i] = 0;
         }
         dev->temperature_mc = 0;
+        dev->axis_map = IMU_AXIS_MAP_IDENTITY;
         dev->orientation = IMU_ORIENT_UNKNOWN;
         dev->orientation_candidate = IMU_ORIENT_UNKNOWN;
         dev->orientation_candidate_ms = 0;
@@ -166,11 +167,36 @@ static void _track_orientation(struct imu_device *dev, uint32_t now)
         light_debug("device '%s': orientation now %d", dev->header.id, observed);
 }
 
+// rotates a freshly-sampled chip-frame reading into the device frame, in place. done here
+// rather than in each driver because the mounting is a property of the BOARD, which a chip
+// driver has no way to know -- and done before orientation is classified, since the
+// orientation codes are defined in the device frame
+static void _apply_axis_map(struct imu_device *dev)
+{
+        int32_t accel[IMU_AXIS_COUNT], gyro[IMU_AXIS_COUNT];
+
+        for(uint8_t i = 0; i < IMU_AXIS_COUNT; i++) {
+                accel[i] = dev->accel_mg[i];
+                gyro[i] = dev->gyro_mdps[i];
+        }
+        for(uint8_t i = 0; i < IMU_AXIS_COUNT; i++) {
+                uint8_t src = dev->axis_map.source[i];
+                // a map naming an out-of-range source would index past the copies above --
+                // fall back to the straight-through axis rather than read rubbish
+                if(src >= IMU_AXIS_COUNT)
+                        src = i;
+                dev->accel_mg[i] = accel[src] * dev->axis_map.sign[i];
+                dev->gyro_mdps[i] = gyro[src] * dev->axis_map.sign[i];
+        }
+}
+
 bool light_imu_command_poll(struct imu_device *dev)
 {
         bool got_sample = dev->driver_ctx->driver->poll(dev);
-        if(got_sample)
+        if(got_sample) {
+                _apply_axis_map(dev);
                 _track_orientation(dev, light_platform_get_time_since_init());
+        }
         return got_sample;
 }
 bool light_imu_take_orientation(struct imu_device *dev, uint8_t *out)
@@ -187,6 +213,14 @@ void light_imu_set_orientation_thresholds(struct imu_device *dev,
 {
         dev->orientation_hold_ms = hold_ms;
         dev->orientation_margin_mg = margin_mg;
+}
+void light_imu_set_axis_map(struct imu_device *dev, struct imu_axis_map map)
+{
+        dev->axis_map = map;
+        // the settled orientation was classified in the old frame, so it means nothing now.
+        // clearing it rather than leaving it makes the next poll re-derive from scratch
+        dev->orientation = IMU_ORIENT_UNKNOWN;
+        dev->orientation_candidate = IMU_ORIENT_UNKNOWN;
 }
 void light_imu_poll_devices(void)
 {
