@@ -65,11 +65,18 @@ struct imu_driver
         struct imu_driver_context *(*spawn_context)();
         void (*init_device)(struct imu_device *);
         void (*reset)(struct imu_device *);
-        // samples the sensor, writing engineering units into dev->accel_mg/gyro_mdps.
-        // returns true if a new sample was captured, false if there was nothing new to
-        // report -- the same contract as light_touch's poll(), and for the same reason:
-        // this is called far more often than a sensor at 100Hz produces data
+        // samples the sensor, writing engineering units into dev->accel_mg/gyro_mdps in the
+        // CHIP's own axes (light_imu rotates them into the device frame afterwards). returns
+        // true if a new sample was captured, false if there was nothing new to report
         bool (*poll)(struct imu_device *);
+
+        // how often this chip can actually produce a new sample, in ms. light_imu throttles
+        // polling to it, so no driver has to time its own transport access.
+        //
+        // data rather than a function because the logic around it is identical in every
+        // driver and only the constant ever differs -- the same call light_display made with
+        // async_timeout_ms. 0 means "poll whenever asked", for a driver whose read is free
+        uint16_t sample_interval_ms;
 };
 struct imu_driver_context
 {
@@ -95,6 +102,11 @@ struct imu_device {
         // milli-degrees Celsius; drivers that don't report die temperature leave this at 0
         int32_t temperature_mc;
         struct imu_driver_context *driver_ctx;
+
+        // polling throttle -- see imu_driver.sample_interval_ms. seeded from the driver at
+        // creation and overridable per device, e.g. to trade responsiveness for power
+        uint32_t last_poll_ms;
+        uint16_t poll_interval_ms;
 
         // --- orientation tracking, driven from light_imu_command_poll() ---
         // the settled orientation, and the candidate currently being timed out
@@ -134,8 +146,14 @@ extern struct imu_device *light_imu_init_device_va(
 extern void light_imu_command_init(struct imu_device *dev);
 extern void light_imu_command_reset(struct imu_device *dev);
 // polls the device for a new sample and advances orientation tracking. returns true when a
-// new sample was captured
+// new sample was captured.
+//
+// safe (and expected) to call far more often than the sensor produces data: the driver is
+// only actually asked once per poll_interval_ms, and every call in between returns false
+// without touching the transport at all
 extern bool light_imu_command_poll(struct imu_device *dev);
+// overrides the polling throttle seeded from the driver (see imu_driver.sample_interval_ms)
+extern void light_imu_set_poll_interval(struct imu_device *dev, uint16_t interval_ms);
 
 // collects a pending orientation CHANGE and clears it, so each change is reported exactly
 // once however often this is called. returns false and leaves *out untouched when the

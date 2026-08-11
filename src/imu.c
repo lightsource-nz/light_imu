@@ -96,6 +96,8 @@ struct imu_device *light_imu_init_device_va(
         }
         dev->temperature_mc = 0;
         dev->axis_map = IMU_AXIS_MAP_IDENTITY;
+        dev->last_poll_ms = 0;
+        dev->poll_interval_ms = driver_ctx->driver->sample_interval_ms;
         dev->orientation = IMU_ORIENT_UNKNOWN;
         dev->orientation_candidate = IMU_ORIENT_UNKNOWN;
         dev->orientation_candidate_ms = 0;
@@ -192,12 +194,27 @@ static void _apply_axis_map(struct imu_device *dev)
 
 bool light_imu_command_poll(struct imu_device *dev)
 {
+        uint32_t now = light_platform_get_time_since_init();
+
+        // don't go near the transport more often than the sensor can produce data. this is
+        // the core's job rather than each driver's: a sensor runs at its own output rate
+        // while the module task polls every scheduler tick, so the great majority of calls
+        // would otherwise spend a bus read discovering there is nothing new -- and on a bus
+        // shared with other devices, that costs every one of them latency
+        if(dev->poll_interval_ms && now - dev->last_poll_ms < dev->poll_interval_ms)
+                return false;
+        dev->last_poll_ms = now;
+
         bool got_sample = dev->driver_ctx->driver->poll(dev);
         if(got_sample) {
                 _apply_axis_map(dev);
-                _track_orientation(dev, light_platform_get_time_since_init());
+                _track_orientation(dev, now);
         }
         return got_sample;
+}
+void light_imu_set_poll_interval(struct imu_device *dev, uint16_t interval_ms)
+{
+        dev->poll_interval_ms = interval_ms;
 }
 bool light_imu_take_orientation(struct imu_device *dev, uint8_t *out)
 {
