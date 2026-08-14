@@ -36,7 +36,7 @@ static volatile uint16_t next_device_id;
 void light_imu_init()
 {
         next_device_id = 0;
-        light_object_init(&device_root.header, &ltype_imu_device_root);
+        light_object_init_static(&device_root.header, &ltype_imu_device_root);
         light_object_add(&device_root.header, NULL, "root_device");
 }
 struct imu_device_root *light_imu_device_get_root()
